@@ -1,10 +1,10 @@
-# golang版本的curl请求库
+# golang版本的curl请求库(基于mikemintang/go-curl)
 
 
 ## 安装
 
 ```
-go get github.com/mikemintang/go-curl
+go get github.com/alonCn/go-curl
 ```
   
 ## 使用
@@ -14,7 +14,7 @@ package main
 
 import (
     "fmt"
-    "github.com/mikemintang/go-curl"
+    "github.com/alonCn/go-curl"
 )
 
 func main() {
