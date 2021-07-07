@@ -1,212 +1,295 @@
-/**
- * golang版本的curl请求库
- * Request构造类，用于设置请求参数，发起http请求
- * @author mike <mikemintang@126.com>
- * @blog http://idoubi.cc
- */
-
-package curl
+package goz
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
-	"net"
+	"io/ioutil"
+	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 	"time"
+
+	"github.com/idoubi/goutils"
 )
 
-// Request构造类
+// Request object
 type Request struct {
-	cli             *http.Client
-	req             *http.Request
-	Raw             *http.Request
-	Method          string
-	Url             string
-	dialTimeout     time.Duration
-	responseTimeOut time.Duration
-	Headers         map[string]string
-	Cookies         map[string]string
-	Queries         map[string]string
-	PostData        map[string]interface{}
+	opts Options
+	cli  *http.Client
+	req  *http.Request
+	body io.Reader
 }
 
-// 创建一个Request实例
-func NewRequest() *Request {
-	r := &Request{}
-	r.dialTimeout = 5
-	r.responseTimeOut = 5
-	return r
+// Get send get request
+func (r *Request) Get(uri string, opts ...Options) (*Response, error) {
+	return r.Request("GET", uri, opts...)
 }
 
-// 设置请求方法
-func (this *Request) SetMethod(method string) *Request {
-	this.Method = method
-	return this
+// Post send post request
+func (r *Request) Post(uri string, opts ...Options) (*Response, error) {
+	return r.Request("POST", uri, opts...)
 }
 
-// 设置请求地址
-func (this *Request) SetUrl(url string) *Request {
-	this.Url = url
-	return this
+// Put send put request
+func (r *Request) Put(uri string, opts ...Options) (*Response, error) {
+	return r.Request("PUT", uri, opts...)
 }
 
-// 设置请求头
-func (this *Request) SetHeaders(headers map[string]string) *Request {
-	this.Headers = headers
-	return this
+// Patch send patch request
+func (r *Request) Patch(uri string, opts ...Options) (*Response, error) {
+	return r.Request("PATCH", uri, opts...)
 }
 
-// 将用户自定义请求头添加到http.Request实例上
-func (this *Request) setHeaders() error {
-	for k, v := range this.Headers {
-		this.req.Header.Set(k, v)
+// Delete send delete request
+func (r *Request) Delete(uri string, opts ...Options) (*Response, error) {
+	return r.Request("DELETE", uri, opts...)
+}
+
+// Options send options request
+func (r *Request) Options(uri string, opts ...Options) (*Response, error) {
+	return r.Request("OPTIONS", uri, opts...)
+}
+
+// Request send request
+func (r *Request) Request(method, uri string, opts ...Options) (*Response, error) {
+	if len(opts) > 0 {
+		r.opts = opts[0]
 	}
-	return nil
-}
 
-// 设置请求cookies
-func (this *Request) SetCookies(cookies map[string]string) *Request {
-	this.Cookies = cookies
-	return this
-}
-
-// 将用户自定义cookies添加到http.Request实例上
-func (this *Request) setCookies() error {
-	for k, v := range this.Cookies {
-		this.req.AddCookie(&http.Cookie{
-			Name:  k,
-			Value: v,
-		})
+	if r.opts.Headers == nil {
+		r.opts.Headers = make(map[string]interface{})
 	}
-	return nil
-}
 
-// 设置url查询参数
-func (this *Request) SetQueries(queries map[string]string) *Request {
-	this.Queries = queries
-	return this
-}
-
-// 将用户自定义url查询参数添加到http.Request上
-func (this *Request) setQueries() error {
-	q := this.req.URL.Query()
-	for k, v := range this.Queries {
-		q.Add(k, v)
-	}
-	this.req.URL.RawQuery = q.Encode()
-	return nil
-}
-
-// 设置post请求的提交数据
-func (this *Request) SetPostData(postData map[string]interface{}) *Request {
-	this.PostData = postData
-	return this
-}
-
-// 发起get请求
-func (this *Request) Get() (*Response, error) {
-	return this.Send(this.Url, http.MethodGet)
-}
-
-// 发起Delete请求
-func (this *Request) Delete() (*Response, error) {
-	return this.Send(this.Url, http.MethodDelete)
-}
-
-// 发起Delete请求
-func (this *Request) Put() (*Response, error) {
-	return this.Send(this.Url, http.MethodPut)
-}
-
-// 发起post请求
-func (this *Request) Post() (*Response, error) {
-	return this.Send(this.Url, http.MethodPost)
-}
-
-// 发起put请求
-func (this *Request) PUT() (*Response, error) {
-	return this.Send(this.Url, http.MethodPut)
-}
-
-// 发起put请求
-func (this *Request) PATCH() (*Response, error) {
-	return this.Send(this.Url, http.MethodPatch)
-}
-
-//SetDialTimeOut
-func (this *Request) SetDialTimeOut(TimeOutSecond int) {
-	this.dialTimeout = time.Duration(TimeOutSecond)
-}
-
-//SetResponseTimeOut
-func (this *Request) SetResponseTimeOut(TimeOutSecond int) {
-	this.responseTimeOut = time.Duration(TimeOutSecond)
-}
-
-// 发起请求
-func (this *Request) Send(url string, method string) (*Response, error) {
-	// 检测请求url是否填了
-	if url == "" {
-		return nil, errors.New("Lack of request url")
-	}
-	// 检测请求方式是否填了
-	if method == "" {
-		return nil, errors.New("Lack of request method")
-	}
-	// 初始化Response对象
-	response := NewResponse()
-	// 初始化http.Client对象
-	this.cli = &http.Client{
-		////////
-		Transport: &http.Transport{
-			Dial: func(netw, addr string) (net.Conn, error) {
-				conn, err := net.DialTimeout(netw, addr, time.Second*this.dialTimeout)
-				if err != nil {
-					return nil, err
-				}
-				conn.SetDeadline(time.Now().Add(time.Second * this.dialTimeout))
-				return conn, nil
-			},
-			ResponseHeaderTimeout: time.Second * this.responseTimeOut,
-		},
-		////////////
-	}
-	// 加载用户自定义的post数据到http.Request
-	var payload io.Reader
-	if method == "POST" && this.PostData != nil {
-		if jData, err := json.Marshal(this.PostData); err != nil {
+	switch method {
+	case http.MethodGet, http.MethodDelete:
+		req, err := http.NewRequest(method, uri, nil)
+		if err != nil {
 			return nil, err
-		} else {
-			payload = bytes.NewReader(jData)
 		}
-	} else {
-		payload = nil
+
+		r.req = req
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodOptions:
+		// parse body
+		r.parseBody()
+
+		req, err := http.NewRequest(method, uri, r.body)
+		if err != nil {
+			return nil, err
+		}
+
+		r.req = req
+	default:
+		return nil, errors.New("invalid request method")
 	}
 
-	if req, err := http.NewRequest(method, url, payload); err != nil {
-		return nil, err
-	} else {
-		this.req = req
+	// parseOptions
+	r.parseOptions()
+
+	// parseClient
+	r.parseClient()
+
+	// parse query
+	r.parseQuery()
+
+	// parse headers
+	r.parseHeaders()
+
+	// parse cookies
+	r.parseCookies()
+
+	if r.opts.Debug {
+		// print request object
+		dump, err := httputil.DumpRequest(r.req, true)
+		if err == nil {
+			log.Printf("\n%s\n\n", dump)
+		}
 	}
 
-	this.setHeaders()
-	this.setCookies()
-	this.setQueries()
+	_resp, err := r.cli.Do(r.req)
 
-	this.Raw = this.req
-
-	if resp, err := this.cli.Do(this.req); err != nil {
-		return nil, err
-	} else {
-		response.Raw = resp
+	resp := &Response{
+		resp: _resp,
+		req:  r.req,
+		err:  err,
 	}
 
-	defer response.Raw.Body.Close()
+	if err == nil {
+		body, err := ioutil.ReadAll(_resp.Body)
+		_resp.Body.Close()
 
-	response.parseHeaders()
-	response.parseBody()
+		resp.body = body
+		resp.err = err
+	}
 
-	return response, nil
+	if err != nil {
+		if r.opts.Debug {
+			// print response err
+			fmt.Println(err)
+		}
+
+		return resp, err
+	}
+
+	if r.opts.Debug {
+		// print response data
+		body, _ := resp.GetBody()
+		fmt.Println(string(body))
+	}
+
+	return resp, nil
+}
+
+func (r *Request) parseOptions() {
+	// default timeout 30s
+	if r.opts.Timeout == 0 {
+		r.opts.Timeout = 30
+	}
+	r.opts.timeout = time.Duration(r.opts.Timeout*1000) * time.Millisecond
+}
+
+func (r *Request) parseClient() {
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	if r.opts.Proxy != "" {
+		proxy, err := url.Parse(r.opts.Proxy)
+		if err == nil {
+			tr.Proxy = http.ProxyURL(proxy)
+		}
+	}
+
+	r.cli = &http.Client{
+		Timeout:   r.opts.timeout,
+		Transport: tr,
+	}
+}
+
+func (r *Request) parseQuery() {
+	switch r.opts.Query.(type) {
+	case string:
+		str := r.opts.Query.(string)
+		r.req.URL.RawQuery = str
+	case map[string]interface{}:
+		q := r.req.URL.Query()
+		for k, v := range r.opts.Query.(map[string]interface{}) {
+			if vv, ok := v.(string); ok {
+				q.Set(k, vv)
+				continue
+			}
+			if vv, ok := v.([]string); ok {
+				for _, vvv := range vv {
+					q.Add(k, vvv)
+				}
+			}
+		}
+		r.req.URL.RawQuery = q.Encode()
+	}
+}
+
+func (r *Request) parseCookies() {
+	switch r.opts.Cookies.(type) {
+	case string:
+		cookies := r.opts.Cookies.(string)
+		r.req.Header.Add("Cookie", cookies)
+	case map[string]string:
+		cookies := r.opts.Cookies.(map[string]string)
+		for k, v := range cookies {
+			r.req.AddCookie(&http.Cookie{
+				Name:  k,
+				Value: v,
+			})
+		}
+	case []*http.Cookie:
+		cookies := r.opts.Cookies.([]*http.Cookie)
+		for _, cookie := range cookies {
+			r.req.AddCookie(cookie)
+		}
+	}
+}
+
+func (r *Request) parseHeaders() {
+	if r.opts.Headers != nil {
+		for k, v := range r.opts.Headers {
+			if vv, ok := v.(string); ok {
+				r.req.Header.Set(k, vv)
+				continue
+			}
+			if vv, ok := v.([]string); ok {
+				for _, vvv := range vv {
+					r.req.Header.Add(k, vvv)
+				}
+			}
+		}
+	}
+}
+
+func (r *Request) parseBody() {
+	// application/x-www-form-urlencoded
+	if r.opts.FormParams != nil {
+		if _, ok := r.opts.Headers["Content-Type"]; !ok {
+			r.opts.Headers["Content-Type"] = "application/x-www-form-urlencoded"
+		}
+
+		values := url.Values{}
+		for k, v := range r.opts.FormParams {
+			if vv, ok := v.(string); ok {
+				values.Set(k, vv)
+			}
+			if vv, ok := v.([]string); ok {
+				for _, vvv := range vv {
+					values.Add(k, vvv)
+				}
+			}
+		}
+		r.body = strings.NewReader(values.Encode())
+
+		return
+	}
+
+	// application/json
+	if r.opts.JSON != nil {
+		if _, ok := r.opts.Headers["Content-Type"]; !ok {
+			r.opts.Headers["Content-Type"] = "application/json"
+		}
+
+		b, err := json.Marshal(r.opts.JSON)
+		if err == nil {
+			r.body = bytes.NewReader(b)
+
+			return
+		}
+	}
+
+	// application/xml
+	if r.opts.XML != nil {
+		if _, ok := r.opts.Headers["Content-Type"]; !ok {
+			r.opts.Headers["Content-Type"] = "application/xml"
+		}
+
+		switch r.opts.XML.(type) {
+		case map[string]string:
+			// 请求参数转换成xml结构
+			b, err := goutils.Map2XML(r.opts.XML.(map[string]string))
+			if err == nil {
+				r.body = bytes.NewBuffer(b)
+
+				return
+			}
+		default:
+			b, err := xml.Marshal(r.opts.JSON)
+			if err == nil {
+				r.body = bytes.NewBuffer(b)
+			}
+		}
+	}
+
+	return
 }
